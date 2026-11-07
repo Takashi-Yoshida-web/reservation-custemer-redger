@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>スタッフ予約登録</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    :root { --bg:#111; --card:#1c1c1e; --text:#f2f2f2; --sub:#9a9a9f; --accent:#a855f7; --err:#ff6b6b; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Hiragino Sans",sans-serif; }
+    main { max-width:480px; margin:0 auto; padding:24px 16px 48px; }
+    h1 { font-size:22px; margin:0 0 4px; }
+    p.lead { color:var(--sub); margin:0 0 20px; font-size:14px; }
+    label { display:block; font-size:14px; color:var(--sub); margin:16px 0 6px; }
+    input, select { width:100%; padding:12px; font-size:16px; border-radius:10px; border:1px solid #333; background:var(--card); color:var(--text); }
+    .tabs { display:flex; gap:8px; margin-top:8px; }
+    .tabs button { flex:1; padding:10px; border-radius:10px; border:1px solid #333; background:var(--card); color:var(--text); font-size:15px; }
+    .tabs button.on { border-color:var(--accent); color:var(--accent); font-weight:bold; }
+    .hidden { display:none; }
+    .submit { width:100%; margin-top:28px; padding:14px; font-size:17px; font-weight:bold; border:0; border-radius:12px; background:var(--accent); color:#fff; }
+    .submit:disabled { opacity:.5; }
+    .msg { margin-top:16px; font-size:14px; min-height:20px; word-break:break-all; }
+    .msg.err { color:var(--err); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>予約登録（スタッフ用）</h1>
+  <p class="lead" id="who">確認中…</p>
+  <form id="form" class="hidden">
+    <label>お客様</label>
+    <div class="tabs">
+      <button type="button" id="tabExisting" class="on">登録済み</button>
+      <button type="button" id="tabNew">新しいお客様</button>
+    </div>
+    <div id="existing">
+      <label for="search">あだ名で絞り込み</label>
+      <input id="search" placeholder="例：たっくん">
+      <label for="customer">お客様を選ぶ</label>
+      <select id="customer"></select>
+    </div>
+    <div id="newCustomer" class="hidden">
+      <label for="nickname">あだ名</label>
+      <input id="nickname" maxlength="30">
+      <label for="idNote">見分け用メモ（年齢など）</label>
+      <input id="idNote" maxlength="30" placeholder="例：30代 / メガネ">
+    </div>
+    <label for="visitAt">来店予定日時</label>
+    <input id="visitAt" type="datetime-local" required>
+    <label for="people">人数</label>
+    <select id="people"></select>
+    <button id="submit" class="submit" type="submit">登録する</button>
+    <div id="msg" class="msg"></div>
+  </form>
+</main>
+<script>
+  // ▼ 設定（自分の値に書き換える）
+  const LIFF_ID = 'ここにスタッフ用LIFFのID';
+  const GAS_URL = 'ここにGASのウェブアプリURL';
+
+  const $ = id => document.getElementById(id);
+  let customers = [];
+  let mode = 'existing';
+  for (let i = 1; i <= 10; i++) $('people').add(new Option(i + '名', i));
+
+  async function call(payload) {
+    payload.idToken = liff.getIDToken();
+    const res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    return data;
+  }
+
+  function setMsg(text, isErr) {
+    $('msg').textContent = text;
+    $('msg').className = 'msg' + (isErr ? ' err' : '');
+  }
+
+  function renderCustomers() {
+    const q = $('search').value.trim();
+    const sel = $('customer');
+    sel.replaceChildren();
+    customers
+      .filter(c => !q || String(c.nickname).includes(q))
+      .forEach(c => sel.add(new Option(c.nickname + (c.idNote ? '（' + c.idNote + '）' : ''), c.id)));
+    if (!sel.options.length) sel.add(new Option('該当なし', ''));
+  }
+
+  function setMode(m) {
+    mode = m;
+    $('tabExisting').classList.toggle('on', m === 'existing');
+    $('tabNew').classList.toggle('on', m === 'new');
+    $('existing').classList.toggle('hidden', m !== 'existing');
+    $('newCustomer').classList.toggle('hidden', m !== 'new');
+  }
+
+  $('tabExisting').onclick = () => setMode('existing');
+  $('tabNew').onclick = () => setMode('new');
+  $('search').oninput = renderCustomers;
+
+  (async () => {
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) { liff.login(); return; }
+      const init = await call({ action: 'staffInit' });
+      if (!init.registered) {
+        // オーナーに伝えるID（スタッフシートのA列に貼ってもらう）
+        $('who').textContent = 'スタッフ登録がまだです。次のIDをオーナーに送ってください：' + init.userId;
+        return;
+      }
+      $('who').textContent = init.name + ' さんとして登録します';
+      customers = init.customers;
+      renderCustomers();
+      $('form').classList.remove('hidden');
+    } catch (e) {
+      $('who').textContent = '読み込みに失敗しました：' + e.message;
+    }
+  })();
+
+  $('form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    $('submit').disabled = true;
+    setMsg('送信中…');
+    try {
+      const payload = { action: 'staffReserve', visitAt: $('visitAt').value, people: $('people').value };
+      if (mode === 'existing') {
+        if (!$('customer').value) throw new Error('お客様を選んでください');
+        payload.customerId = $('customer').value;
+      } else {
+        payload.nickname = $('nickname').value;
+        payload.idNote = $('idNote').value;
+      }
+      await call(payload);
+      setMsg('登録しました');
+      $('visitAt').value = '';
+      // 新規客を一覧に反映
+      const init = await call({ action: 'staffInit' });
+      customers = init.customers;
+      renderCustomers();
+    } catch (e) {
+      setMsg(e.message, true);
+    } finally {
+      $('submit').disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
